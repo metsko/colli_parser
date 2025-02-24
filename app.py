@@ -14,6 +14,11 @@ from api_client import ChatGPTClient
 from config import config
 from invoice_parser import InvoiceParser
 from utils import get_hash_map
+from splitwise import Splitwise
+from splitwise.expense import Expense
+from splitwise.user import Friend, ExpenseUser
+from splitwise.group import Group
+from typing import Dict
 
 env_path = ".env"
 if load_dotenv(env_path):
@@ -29,6 +34,55 @@ API_TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 api_client = ChatGPTClient(config.API_TOKEN)
 parser = InvoiceParser(api_client)
+
+# SPLITWISE_GROUP=
+s = Splitwise(
+    os.getenv("SPLITWISE_CONSUMER_KEY"),
+    os.getenv("SPLITWISE_CONSUMER_SECRET"),
+    api_key=os.getenv("SPLITWISE_API_KEY"),
+)
+current = s.getCurrentUser()
+group = s.getGroup()
+SW_GROUP_NAME = "Anti Hangriness Sofieke"
+sofie = list(filter(lambda f: f.first_name == "Sofie", s.getFriends()))[0]
+
+
+def get_group():
+    group = list(filter(lambda g: g.getName() == SW_GROUP_NAME, s.getGroups()))
+    if group != []:
+        return group[0]
+    else:
+        logger.warning(f"Group {SW_GROUP_NAME} does not exists.")
+        create_sw_group()
+
+
+def create_sw_group():
+    logger.info(f"Creating group {SW_GROUP_NAME}")
+    group = group = Group()
+    group.setName(SW_GROUP_NAME)
+    group.addMember(sofie)
+    s.createGroup(group)
+
+
+def register_splitwise_expense(item_dict: Dict, sofie: Friend = sofie):
+    group = get_group()
+    expense = Expense()
+    expense.setGroupId(group.id)
+    expense.setCost(item_dict["price"])
+    expense.setDescription(item_dict["description"])
+    maarten_exp = ExpenseUser()
+    maarten_exp.setId(current.id)
+    maarten_exp.setPaidShare(1 * item_dict["price"])
+    maarten_exp.setOwedShare(1 * item_dict["price"])
+    sofie_exp = ExpenseUser()
+    sofie_exp.setId(sofie.id)
+    sofie_exp.setPaidShare(0 * item_dict["price"])
+    sofie_exp.setOwedShare(0 * item_dict["price"])
+    expense.addUser(maarten_exp)
+    expense.addUser(sofie_exp)
+    nExpense, errors = s.createExpense(expense)
+    if errors:
+        logger.error(errors)
 
 
 def calculate_file_hash(file_path: str) -> str:
@@ -84,6 +138,15 @@ def parse_maartens_items(local_file_path: Path):
     )
 
 
+@app.post("/register_expense")
+async def register_expense(item_json: str):
+    """
+    Parse Maarten's items from the invoice
+    """
+
+    return register_splitwise_expense(item_json)
+
+
 @app.post("/parse_maarten")
 async def parse_maarten(local_file_path: str):
     """
@@ -119,6 +182,7 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: str = Heade
         await file_info.download_to_drive(local_file_path)
 
         answer = parse_maartens_items(local_file_path)
+        list(map(lambda item: register_splitwise_expense(item), json.loads(answer)))
         await bot.send_message(chat_id=chat_id, text=answer)
     else:
         await bot.send_message(chat_id=chat_id, text="Please send a PDF file.")
@@ -129,4 +193,4 @@ async def webhook(request: Request, x_telegram_bot_api_secret_token: str = Heade
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    uvicorn.run(app, host="0.0.0.0", port=6000)
