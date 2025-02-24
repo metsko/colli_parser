@@ -22,5 +22,6 @@ python-telegram-bot = "^21.10"
 quart = "^0.20.0"
 fastapi = "^0.115.8"
 uvicorn = "^0.34.0"
+splitwise = "^3.0.0"
 
 [tool.poetry.dev-dependencies]
