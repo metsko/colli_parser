@@ -48,7 +48,7 @@ class InvoiceParser:
         image_paths = []
         for i, image in enumerate(images):
             image_path = f"data/temp_image_{i}.jpg"
-            image.resize((600, 850)).save(image_path, "JPEG")
+            image.save(image_path, "JPEG")
             image_paths.append(image_path)
         return image_paths
 

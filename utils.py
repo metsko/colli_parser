@@ -41,7 +41,7 @@ def get_hash_map(
         col_name_to_match
     )
 
-    return (
+    output = (
         cross_joined.with_columns(
             normalize_col(col_name), normalize_col(col_name_to_match)
         )
@@ -78,6 +78,7 @@ def get_hash_map(
             .alias("max_similarity_ratio")
         )
         .filter(pl.col("similarity_ratio") == pl.col("max_similarity_ratio"))
-        .filter(pl.col("similarity_ratio") >= 0.9)
         .unique("description")
     )
+
+    return output.filter(pl.col("similarity_ratio") >= 0.8)

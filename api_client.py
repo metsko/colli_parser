@@ -17,7 +17,7 @@ class ChatGPTClient:
         try:
             completion = self.client.beta.chat.completions.parse(
                 model="gpt-4o-mini",
-                max_tokens=5000,
+                max_tokens=10000,
                 messages=[
                     {
                         "role": "user",
