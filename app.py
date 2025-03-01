@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import math
 import os
@@ -71,15 +72,18 @@ def register_splitwise_expense(
     item_dict: Dict,
     payer_name: str,
     friend_names: List = None,
-    maarten_percentage: float = None,
-    group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME,
+    maartens_owe_percentage: float = None,
+    sofies_pct: float = 0,
+    group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME
 ):
+
     price = item_dict["price"]
     description = item_dict["description"]
+    
     group = get_group(group_name)
     members = group.members
     available_members = [f.first_name for f in members]
-    
+
     # Replace assertion with proper error handling
     if payer_name not in available_members:
         error_msg = (
@@ -88,7 +92,7 @@ def register_splitwise_expense(
         )
         logger.error(error_msg)
         raise ValueError(error_msg)
-    
+
     if friend_names:
         members = [f for f in members if f.first_name in friend_names] + [current]
 
@@ -106,46 +110,48 @@ def register_splitwise_expense(
     maarten_exp = ExpenseUser()
     maarten_exp.setId(current.id)
 
-    assert (not maarten_percentage) or (maarten_percentage <= 1), (
-        "Maarten's percentage should be less than 1."
+    assert (not maartens_owe_percentage) or (maartens_owe_percentage <= 1), (
+        "Maarten's percentage should be less than or equal to 1."
     )
-    if maarten_percentage:
-        maartens_share = price * maarten_percentage
-        maarten_exp.setOwedShare(maartens_share)
-        if payer_name == "maarten":
-            maarten_exp.setPaidShare(price)
-        else:
-            maarten_exp.setPaidShare(0)
+    if payer_name == "maarten":
+        maartens_paid_share = price*(1-sofies_pct/100)
+        maarten_exp.setPaidShare(maartens_paid_share)
+    else:
+        maarten_exp.setPaidShare(0)
+
+    if maartens_owe_percentage is not None:
+        maartens_share = price * maartens_owe_percentage
         # without Maarten
-        equal_share = ((1 - maarten_percentage) * price) / (len(members))
+        equal_share = ((1 - maartens_owe_percentage) * price) / (len(members) - 1)
     else:
         # with Maarten
         equal_share = math.floor(price * 100 / len(members)) / 100
         maartens_share = equal_share
-        maarten_exp.setPaidShare(equal_share)
-        maarten_exp.setOwedShare(equal_share)
 
+    maarten_exp.setOwedShare(maartens_share)
     expense.addUser(maarten_exp)
-
-    if equal_share > 0:
-        total_share = maartens_share
-        other_members = list(
-            set(filter(lambda f: f.first_name.lower() != "maarten", members))
-        )
-        for i, friend in enumerate(other_members):
-            friend_exp = ExpenseUser()
-            friend_exp.setId(friend.id)
-            # last
-            if i == (len(other_members) - 1):
-                remainder = round(price - equal_share - total_share, 2)
-                equal_share += remainder
-            if friend.first_name == payer_name:
-                friend_exp.setPaidShare(price)
-            else:
-                friend_exp.setPaidShare(0)
-            friend_exp.setOwedShare(equal_share)
-            expense.addUser(friend_exp)
-            total_share += equal_share
+    total_share = maartens_share
+    other_members = list(
+        set(filter(lambda f: f.first_name.lower() != "maarten", members))
+    )
+    for i, friend in enumerate(other_members):
+        friend_exp = ExpenseUser()
+        friend_exp.setId(friend.id)
+        # last
+        if i == (len(other_members) - 1):
+            remainder = round(price - equal_share - total_share, 2)
+            equal_share += remainder
+        friends_name = friend.first_name.lower().strip()
+        payer_name = payer_name.lower().strip()
+        if friends_name == "sofie":
+            friend_exp.setPaidShare(price*sofies_pct/100)
+        elif friends_name == payer_name:
+            friend_exp.setPaidShare(price*(1-sofies_pct/100))
+        else:
+            friend_exp.setPaidShare(0)
+        friend_exp.setOwedShare(equal_share)
+        expense.addUser(friend_exp)
+        total_share += equal_share
 
     nExpense, errors = s.createExpense(expense)
     if errors:
@@ -156,16 +162,18 @@ def register_splitwise_expenses(
     items: List,
     payer_name: str,
     friend_names: List = None,
-    maarten_percentage: float = None,
+    maartens_owe_percentage: float = None,
     group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME,
+    sofies_pct: float = None
 ):
     for item in items:
         register_splitwise_expense(
             item,
             payer_name,
             friend_names,
-            maarten_percentage=maarten_percentage,
+            maartens_owe_percentage=maartens_owe_percentage,
             group_name=group_name,
+            sofies_pct=sofies_pct
         )
 
 
@@ -197,7 +205,8 @@ def parse_invoice(local_file_path: str, parser=parser) -> pl.DataFrame:
             pl.col("column_0").str.json_decode().alias("page_struct")
         ).unnest("page_struct")
         df = df.with_columns(
-            pl.lit(local_file_path.as_posix()).alias("path"), pl.lit(file_hash).alias("file_hash")
+            pl.lit(local_file_path.as_posix()).alias("path"),
+            pl.lit(file_hash).alias("file_hash"),
         )
         df.to_pandas().to_json(output_path, orient="records", mode="a", lines="True")
         return df
@@ -253,8 +262,10 @@ def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
 
 
 @app.post("/process_invoice")
-async def process_invoice(local_file_path: str, payer_name:str) -> str:
+async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:float) -> str:
     invoice_items_df = clean_invoice_df(parse_invoice(local_file_path))
+    total_price = invoice_items_df["price"].sum()
+    sofies_pct = sofies_amount/total_price*100 if payer_name.lower() != "sofie" else 100
     maartens_items_df = filter_items(
         invoice_items_df,
         [
@@ -268,19 +279,27 @@ async def process_invoice(local_file_path: str, payer_name:str) -> str:
             "san pellegrino aranciata",
         ],
     )
+
     maartens_items_descriptions = maartens_items_df["description"].to_list()
     register_splitwise_expenses(
-        maartens_items_df.to_dicts(),payer_name=payer_name, friend_names=["Sofie"], maarten_percentage=1
+        maartens_items_df.to_dicts(),
+        payer_name=payer_name,
+        friend_names=["Sofie"],
+        maartens_owe_percentage=1,
+        sofies_pct=sofies_pct
     )
 
-    # ultra normal is maandverband
     sofies_items_df = filter_items(
         invoice_items_df,
-        ["raclette", "ultra normal"],
+        ["raclette", "maandverband"],
     )
     sofies_items_descriptions = sofies_items_df["description"].to_list()
     register_splitwise_expenses(
-        sofies_items_df.to_dicts(), payer_name=payer_name, friend_names=["Sofie"], maarten_percentage=0
+        sofies_items_df.to_dicts(),
+        payer_name=payer_name,
+        friend_names=["Sofie"],
+        maartens_owe_percentage=0,
+        sofies_pct=sofies_pct
     )
 
     common_items_df = filter_items(
@@ -288,7 +307,7 @@ async def process_invoice(local_file_path: str, payer_name:str) -> str:
         ["toiletpapier", "handzeep", "ontstopper", "allesreiniger", "afwasmiddel"],
     )
     common_items_descriptions = common_items_df["description"].to_list()
-    # register_splitwise_expenses(common_items_df.to_dicts(), group_name=BLIJDEBERG_SW_GROUP_NAME)
+    #register_splitwise_expenses(common_items_df.to_dicts(), group_name=BLIJDEBERG_SW_GROUP_NAME, sofies_pct=sofies_pct)
 
     not_rest_items = (
         common_items_descriptions
@@ -298,7 +317,7 @@ async def process_invoice(local_file_path: str, payer_name:str) -> str:
     rest_items_df = invoice_items_df.filter(pl.col("description").is_not_null()).filter(
         ~pl.col("description").is_in(not_rest_items)
     )
-    register_splitwise_expenses(rest_items_df.to_dicts(), payer_name=payer_name)
+    register_splitwise_expenses(rest_items_df.to_dicts(), payer_name=payer_name, sofies_pct=sofies_pct)
 
     answer = f"Registered the Maartens items: \n{tabulate(maartens_items_df.to_pandas())}\n\n"
     answer += (
@@ -307,76 +326,170 @@ async def process_invoice(local_file_path: str, payer_name:str) -> str:
     answer += (
         f"Registered the common items: \n{tabulate(common_items_df.to_pandas())}\n\n"
     )
-    answer += f"Registered the rest items: \n{tabulate(rest_items_df)}\n\n"
+    answer += f"Registered the rest items: \n{tabulate(rest_items_df.select('description', 'price').to_pandas())}\n\n"
 
     return answer
 
 
 conversation_state = {}
 
+# Add new states for our conversation flow
+CONVERSATION_STATES = {
+    "WAIT_FOR_GROUP": "Which group is this expense for? (Anti Hangriness Sofieke/Blijdeberg)",
+    "WAIT_FOR_PAYER": "Who paid the invoice?",
+    "WAIT_FOR_PDF": "Send me an invoice PDF file, please.",
+}
+
+
+def get_available_members(group_name: str) -> List[str]:
+    group = get_group(group_name)
+    if group:
+        return [f.first_name for f in group.members]
+    return []
+
 
 async def handle_telegram_update(update_data: dict) -> None:
-    """
-    Main handler for a Telegram update.
-    Step 1: Ask "Who paid the invoice?" (store state)
-    Step 2: Wait for the user to reply with the payer's name
-    Step 3: Ask the user to send a PDF
-    Step 4: Parse invoice with the payer's name
-    """
     update = Update.de_json(update_data, bot)
     chat_id = update.message.chat.id
     text = update.message.text or ""
 
-    # If we have no state for this chat_id, start by asking who paid
+    # Initialize new conversation
     if chat_id not in conversation_state:
-        conversation_state[chat_id] = {"state": "WAIT_FOR_PAYER"}
-        await bot.send_message(chat_id=chat_id, text="Who paid the invoice?")
+        conversation_state[chat_id] = {"state": "WAIT_FOR_GROUP"}
+        await bot.send_message(
+            chat_id=chat_id, text=CONVERSATION_STATES["WAIT_FOR_GROUP"]
+        )
         return
 
     current_state = conversation_state[chat_id]["state"]
 
-    # If we are waiting for the payer's name text:
-    if current_state == "WAIT_FOR_PAYER":
-        # Save the payer name from user’s text
-        conversation_state[chat_id]["payer_name"] = text.strip().lower()
-        # Move to the next state, ask for the PDF
-        conversation_state[chat_id]["state"] = "WAIT_FOR_PDF"
+    def longest_common_subsequence(str1, str2):
+        sequence_matcher = difflib.SequenceMatcher(None, str1, str2)
+        match = sequence_matcher.find_longest_match(0, len(str1), 0, len(str2))
+        return {"lcs": str1[match.a : match.a + match.size]}
+
+    def fuzzy_match(target: str, options: List[str]) -> str:
+        import numpy as np
+
+        lcses = [longest_common_subsequence(target, option) for option in options]
+        return options[np.argmax([len(lcs["lcs"]) for lcs in lcses])]
+
+    # Reset conversation if user types "reset"
+    if text.strip().lower() == "reset":
+        conversation_state[chat_id] = {"state": "WAIT_FOR_GROUP"}
         await bot.send_message(
-            chat_id=chat_id, text="Please upload the PDF invoice now."
+            chat_id=chat_id,
+            text="Conversation reset. " + CONVERSATION_STATES["WAIT_FOR_GROUP"],
         )
         return
 
-    # If we are waiting for the PDF file:
+    # Handle group selection
+    if current_state == "WAIT_FOR_GROUP":
+        group_name = text.strip().lower()
+        if group_name in ["1", "2"]:
+            group_name = int(group_name)
+            group_name -= 1
+            group_name = [SOFIE_MAARTEN_SW_GROUP_NAME, BLIJDEBERG_SW_GROUP_NAME][
+                group_name
+            ]
+        else:
+            group_name = fuzzy_match(
+                group_name, [SOFIE_MAARTEN_SW_GROUP_NAME, BLIJDEBERG_SW_GROUP_NAME]
+            )
+        if group_name is None:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Invalid group. Please choose from: {SOFIE_MAARTEN_SW_GROUP_NAME} or {BLIJDEBERG_SW_GROUP_NAME}",
+            )
+            return
+        conversation_state[chat_id].update(
+            {"state": "WAIT_FOR_PAYER", "group_name": group_name}
+        )
+        message = (
+            f"Group selected: {group_name}. {CONVERSATION_STATES['WAIT_FOR_PAYER']}"
+        )
+        await bot.send_message(chat_id=chat_id, text=message)
+        return
+    
+        # Handle payer name
+    if current_state == "WAIT_FOR_PAYER":
+        payer_name = text.strip().lower()
+        group_name = conversation_state[chat_id]["group_name"]
+        available_members = get_available_members(group_name)
+        payer_name = fuzzy_match(payer_name, available_members)
+
+        if not payer_name:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Invalid payer name '{payer_name}'. Please choose from: {', '.join(available_members)}",
+            )
+            return
+
+        conversation_state[chat_id].update(
+            {"state": "WAIT_FOR_PDF", "payer_name": payer_name}
+        )
+
+        if payer_name.lower() == "sofie":
+            conversation_state[chat_id]["sofies_pct"] = 1
+            message = CONVERSATION_STATES["WAIT_FOR_PDF"]
+        else:
+            message = f"Payer selected: {payer_name}. How much did Sofie pay?"
+            conversation_state[chat_id]["state"] = "WAIT_FOR_SOFIE_AMOUNT"
+            conversation_state[chat_id]["sofies_pct"] = 0
+
+        await bot.send_message(chat_id=chat_id, text=message)
+        return
+
+    # Handle Sofie's amount
+    if current_state == "WAIT_FOR_SOFIE_AMOUNT":
+        try:
+            sofie_amount = float(text.strip())
+            conversation_state[chat_id].update(
+                {"state": "WAIT_FOR_PDF", "sofie_amount": sofie_amount}
+            )
+            message = f"Sofie's amount: {sofie_amount}. {CONVERSATION_STATES['WAIT_FOR_PDF']}"
+            await bot.send_message(chat_id=chat_id, text=message)
+        except ValueError:
+            await bot.send_message(chat_id=chat_id, text="Please enter a valid amount.")
+        return
+
+    # Handle PDF upload
     if current_state == "WAIT_FOR_PDF":
-        if (
+        if not (
             update.message.document
             and update.message.document.mime_type == "application/pdf"
         ):
-            try:
-                file_id = update.message.document.file_id
-                file_info = await bot.get_file(file_id)
-
-                local_file_path = Path("data") / f"{file_id}.pdf"
-                await file_info.download_to_drive(local_file_path)
-
-                payer_name = conversation_state[chat_id]["payer_name"]
-                answer = await process_invoice(local_file_path, payer_name=payer_name)
-                await bot.send_message(chat_id=chat_id, text=answer)
-            except ValueError as e:
-                await bot.send_message(chat_id=chat_id, text=str(e))
-                # Reset state to ask for payer name again
-                conversation_state[chat_id] = {"state": "WAIT_FOR_PAYER"}
-                await bot.send_message(chat_id=chat_id, text="Who paid the invoice?")
-            except Exception as e:
-                await bot.send_message(
-                    chat_id=chat_id, 
-                    text=f"An error occurred while processing the invoice: {str(e)}"
-                )
-                conversation_state.pop(chat_id, None)
-            else:
-                conversation_state.pop(chat_id, None)
-        else:
             await bot.send_message(chat_id=chat_id, text="Please send a PDF file.")
+            return
+
+    try:
+        file_id = update.message.document.file_id
+        file_info = await bot.get_file(file_id)
+        local_file_path = Path("data") / f"{file_id}.pdf"
+        await file_info.download_to_drive(local_file_path)
+
+        payer_name = conversation_state[chat_id]["payer_name"]
+        group_name = conversation_state[chat_id]["group_name"]
+        sofies_amount = conversation_state[chat_id].get("sofie_amount", 0)
+
+        answer = await process_invoice(local_file_path, payer_name=payer_name, sofies_amount=sofies_amount)
+        logger.info(answer)
+        await bot.send_message(chat_id=chat_id, text=answer)
+        conversation_state.pop(chat_id, None)
+
+    except ValueError as e:
+        await bot.send_message(chat_id=chat_id, text=str(e))
+        # Reset to group selection
+        conversation_state[chat_id] = {"state": "WAIT_FOR_GROUP"}
+        await bot.send_message(
+            chat_id=chat_id, text=CONVERSATION_STATES["WAIT_FOR_GROUP"]
+        )
+    except Exception as e:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"An error occurred while processing the invoice: {str(e)}",
+        )
+        conversation_state.pop(chat_id, None)
 
 
 @app.post("/webhook")
@@ -396,7 +509,7 @@ async def webhook(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     update_data = await request.json()
-    await handle_telegram_update(update_data)  # Call the new main handler
+    await handle_telegram_update(update_data)
 
     return JSONResponse(content={"status": "ok"})
 
