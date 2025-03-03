@@ -6,10 +6,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import polars as pl
-import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
 from loguru import logger
 from splitwise import Splitwise
 from splitwise.expense import Expense
@@ -26,8 +23,6 @@ from utils import get_hash_map
 env_path = ".env"
 if load_dotenv(env_path):
     logger.info(f"Loaded env variables from {env_path}.")
-
-app = FastAPI()
 
 # Your bot token from BotFather
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -234,34 +229,10 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-@app.post("/register_expense")
-async def register_expense(item_json: str):
-    """
-    Parse Maarten's items from the invoice
-    """
-
-    return register_splitwise_expense(item_json)
-
-
-@app.post("/parse_maarten")
-async def parse_maarten(local_file_path: str) -> str:
-    """
-    Parse Maarten's items from the invoice
-    """
-    invoice_items_df = parse_invoice(local_file_path.as_posix())
-    return tabulate(
-        filter_items(
-            invoice_items_df,
-            ["soya", "espresso", "koffie", "graindor", "bananen", "actimel"],
-        )
-    )
-
-
 def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
     return [items["description"] for items in items_dicts]
 
 
-@app.post("/process_invoice")
 async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:float) -> str:
     invoice_items_df = clean_invoice_df(parse_invoice(local_file_path))
     total_price = invoice_items_df["price"].sum()
@@ -490,29 +461,3 @@ async def handle_telegram_update(update_data: dict) -> None:
             text=f"An error occurred while processing the invoice: {str(e)}",
         )
         conversation_state.pop(chat_id, None)
-
-
-@app.post("/webhook")
-async def webhook(
-    request: Request,
-    x_telegram_bot_api_secret_token: str = Header(
-        ..., alias="X-Telegram-Bot-Api-Secret-Token"
-    ),
-):
-    """
-    Webhook to handle Telegram messages
-    """
-    # logger.info(f"Received Secret Token header: {x_telegram_bot_api_secret_token}")
-    # logger.info(f"Expected Secret Token header: {API_TOKEN}")
-
-    if x_telegram_bot_api_secret_token != API_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    update_data = await request.json()
-    await handle_telegram_update(update_data)
-
-    return JSONResponse(content={"status": "ok"})
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=6000)

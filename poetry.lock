@@ -71,6 +71,20 @@ astroid = ["astroid (>=2,<4)"]
 test = ["astroid (>=2,<4)", "pytest", "pytest-cov", "pytest-xdist"]
 
 [[package]]
+name = "azure-functions"
+version = "1.21.3"
+description = "Azure Functions for Python"
+optional = false
+python-versions = "*"
+files = [
+    {file = "azure-functions-1.21.3.tar.gz", hash = "sha256:c359b9dbd2998c84d8595e31a28ffad4e8ca8dcfb4a3798327f776a67f964351"},
+    {file = "azure_functions-1.21.3-py3-none-any.whl", hash = "sha256:6c45f5e61fe59328c81928a428d43c838e9ead52f1cde1628fcabb372fa10cc8"},
+]
+
+[package.extras]
+dev = ["azure-functions-durable", "coverage", "flake8 (>=4.0.1,<4.1.0)", "flake8-logging-format", "mypy", "pytest", "pytest-cov", "requests (==2.*)"]
+
+[[package]]
 name = "blinker"
 version = "1.9.0"
 description = "Fast, simple object-to-object and broadcast signaling"
@@ -2439,4 +2453,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "cd6cc3141416a9139ae9502529cb541e0f5148a65d22f0b9566d7aebec93e8b4"
+content-hash = "62a072f1c1146f9ef1ef929a9d783f60f2b7045979a59b12119707ce689d2103"
