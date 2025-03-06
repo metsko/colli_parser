@@ -36,28 +36,34 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2021-09-01' = {
 resource appServicePlan 'Microsoft.Web/serverfarms@2021-03-01' = {
   name: planName
   location: location
+  kind: 'linux'
   sku: {
     name: 'Y1'
     tier: 'Dynamic'
   }
   properties: {
     maximumElasticWorkerCount: 1
-  }
+      reserved: true
+    }
 }
 
 // Function App
 resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
   name: functionAppName
   location: location
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
+    keyVaultReferenceIdentity: keyVault.id
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
-          value: storageAccount.properties.primaryEndpoints.blob
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=core.windows.net'
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -71,7 +77,33 @@ resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
           name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
           value: appInsights.properties.InstrumentationKey
         }
+        {
+          name: 'CHATGPT_API_TOKEN'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=chatgpt-api-token)'
+        }
+        {
+          name: 'TELEGRAM_TOKEN'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=telegram-token)'
+        }
+        {
+          name: 'API_TOKEN'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=api-token)'
+        }
+        {
+          name: 'SPLITWISE_API_KEY'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=splitwise-api-key)'
+        }
+        {
+          name: 'SPLITWISE_CONSUMER_KEY'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=splitwise-consumer-key)'
+        }
+        {
+          name: 'SPLITWISE_CONSUMER_SECRET'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=splitwise-consumer-secret)'
+        }
       ]
+      linuxFxVersion: 'python|3.11'
+      pythonVersion: '3.11'
     }
   }
 }
@@ -86,17 +118,44 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
+resource keyVaultAccessPolicy 'Microsoft.KeyVault/vaults/accessPolicies@2023-07-01' = {
+  parent: keyVault
+  name: 'add'
+  properties: {
+    accessPolicies: [
+      {
+        tenantId: subscription().tenantId
+        objectId: functionApp.identity.principalId
+        permissions: {
+          secrets: [
+            'get'
+            'list'
+          ]
+        }
+      }
+      {
+        tenantId: subscription().tenantId
+        // me
+        objectId: 'a62b6f54-6000-4e17-89e5-41b19880c79a'
+        permissions: {
+          secrets: ['get', 'list']
+        }
+      }
+    ]
+  }
+}
+
 // Key Vault
 resource keyVault 'Microsoft.KeyVault/vaults@2021-06-01-preview' = {
   name: keyVaultName
   location: location
   properties: {
+    createMode: 'recover'
     sku: {
       family: 'A'
       name: 'standard'
     }
     tenantId: subscription().tenantId
-    accessPolicies: [] // Add access policies as needed
     enabledForDeployment: true
     enabledForDiskEncryption: true
     enabledForTemplateDeployment: true
