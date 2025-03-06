@@ -16,7 +16,6 @@ from tabulate import tabulate
 from telegram import Bot, Update
 
 from api_client import ChatGPTClient
-from config import config
 from invoice_parser import InvoiceParser
 from utils import get_hash_map
 
@@ -28,9 +27,10 @@ if load_dotenv(env_path):
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 # Your API token for securing the endpoint
 API_TOKEN = os.getenv("API_TOKEN")
+CHATGPT_API_TOKEN = os.getenv("CHATGPT_API_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
-api_client = ChatGPTClient(config.API_TOKEN)
+api_client = ChatGPTClient(CHATGPT_API_TOKEN)
 parser = InvoiceParser(api_client)
 
 # SPLITWISE_GROUP=
@@ -43,6 +43,9 @@ current = s.getCurrentUser()
 group = s.getGroup()
 SOFIE_MAARTEN_SW_GROUP_NAME = "Anti Hangriness Sofieke"
 BLIJDEBERG_SW_GROUP_NAME = "Blijdeberg"
+
+data_path = Path("../../data")
+data_path.mkdir(exist_ok=True)
 
 
 def get_group(group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME) -> Group:
@@ -180,9 +183,9 @@ def calculate_file_hash(file_path: str) -> str:
     return hasher.hexdigest()
 
 
-def parse_invoice(local_file_path: str, parser=parser) -> pl.DataFrame:
+def parse_invoice(local_file_path: str, parser=parser, data_path=data_path) -> pl.DataFrame:
     file_hash = calculate_file_hash(local_file_path)
-    output_path = Path("data/output.ndjson")
+    output_path = data_path/"output.ndjson"
 
     if output_path.exists():
         df_existing = pl.read_ndjson(output_path)
@@ -318,8 +321,7 @@ def get_available_members(group_name: str) -> List[str]:
         return [f.first_name for f in group.members]
     return []
 
-
-async def handle_telegram_update(update_data: dict) -> None:
+async def handle_telegram_update(update_data: dict, data_path=data_path) -> None:
     update = Update.de_json(update_data, bot)
     chat_id = update.message.chat.id
     text = update.message.text or ""
@@ -436,7 +438,7 @@ async def handle_telegram_update(update_data: dict) -> None:
     try:
         file_id = update.message.document.file_id
         file_info = await bot.get_file(file_id)
-        local_file_path = Path("data") / f"{file_id}.pdf"
+        local_file_path = data_path / f"{file_id}.pdf"
         await file_info.download_to_drive(local_file_path)
 
         payer_name = conversation_state[chat_id]["payer_name"]

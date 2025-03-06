@@ -9,13 +9,13 @@ from pdf2image import convert_from_path
 from tqdm import tqdm
 
 from api_client import ChatGPTClient
-from config import config
 from models import Invoice
 
 
 class InvoiceParser:
-    def __init__(self, api_client: ChatGPTClient):
+    def __init__(self, api_client: ChatGPTClient, output_path: str = "data"):
         self.api_client = api_client
+        self.output_path = output_path
 
     def parse_invoice(self, invoice_path: str) -> Invoice:
         """
@@ -47,7 +47,7 @@ class InvoiceParser:
         images = convert_from_path(pdf_path)
         image_paths = []
         for i, image in enumerate(images):
-            image_path = f"data/temp_image_{i}.jpg"
+            image_path = f"{self.output_path}/temp_image_{i}.jpg"
             image.save(image_path, "JPEG")
             image_paths.append(image_path)
         return image_paths
@@ -61,7 +61,7 @@ class InvoiceParser:
 
 def main():
     files = set(Path("data").rglob("*.pdf"))
-    api_client = ChatGPTClient(config.API_TOKEN)
+    api_client = ChatGPTClient(os.getenv("CHATGPT_API_TOKEN"))
     parser = InvoiceParser(api_client)
     for file in tqdm(files, total=len(files)):
         try:

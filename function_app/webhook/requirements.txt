@@ -46,6 +46,7 @@ pillow==11.1.0
 platformdirs==4.3.6
 polars==1.22.0
 polars_ds==0.8.1
+poppler-utils==0.1.0
 priority==2.0.0
 prompt_toolkit==3.0.50
 psutil==7.0.0
