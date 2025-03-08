@@ -24,7 +24,8 @@ async def webhook(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     update_data = await request.json()
-    await handle_telegram_update(update_data)
+    # we run from ./webhook
+    await handle_telegram_update(update_data, data_path="../data")
     return JSONResponse(content={"status": "ok"})
 
 

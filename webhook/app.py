@@ -14,9 +14,11 @@ from splitwise.group import Group
 from splitwise.user import ExpenseUser
 from tabulate import tabulate
 from telegram import Bot, Update
+from azure.storage.blob import BlobServiceClient
+import io
 
 from api_client import ChatGPTClient
-from invoice_parser import InvoiceParser
+from invoice_parser import InvoiceParser, azure_upload_ndjson, azure_upload_file
 from utils import get_hash_map
 
 env_path = ".env"
@@ -44,8 +46,9 @@ group = s.getGroup()
 SOFIE_MAARTEN_SW_GROUP_NAME = "Anti Hangriness Sofieke"
 BLIJDEBERG_SW_GROUP_NAME = "Blijdeberg"
 
-data_path = Path("../../data")
+data_path = Path("../data")
 data_path.mkdir(exist_ok=True)
+data_path = data_path.as_posix()
 
 
 def get_group(group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME) -> Group:
@@ -182,18 +185,30 @@ def calculate_file_hash(file_path: str) -> str:
         hasher.update(buf)
     return hasher.hexdigest()
 
-
-def parse_invoice(local_file_path: str, parser=parser, data_path=data_path) -> pl.DataFrame:
+def parse_invoice(local_file_path: str, data_path=data_path) -> pl.DataFrame:
+    parser = InvoiceParser(api_client, output_path=data_path)
     file_hash = calculate_file_hash(local_file_path)
-    output_path = data_path/"output.ndjson"
-
-    if output_path.exists():
-        df_existing = pl.read_ndjson(output_path)
+    container_name = "function"
+    df_output_blob_name = "output.ndjson"
+    blob_name = f"invoices/{file_hash}.pdf"
+    blob_service_client = BlobServiceClient.from_connection_string(os.getenv("AzureWebJobsStorage"))
+    blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+    if blob_client.exists():
+        logger.info(f"Blob {blob_name} already exists in container {container_name}.")
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=df_output_blob_name)
+        output_stream = blob_client.download_blob().readall()
+        df_existing = pl.read_ndjson(io.BytesIO(output_stream))
         if file_hash in df_existing["file_hash"].to_list():
             logger.info(
-                f"File hash {file_hash} already exists. Reading from output.ndjson."
+                f"File hash {file_hash} already exists. Reading from blob storage."
             )
             return df_existing.filter(pl.col("file_hash") == file_hash)
+        else:
+            logger.info(
+                f"File hash {file_hash} not found in existing output. Continuing with parse and upload to df.")
+    else:
+        logger.info(f"Blob {blob_name} not found, continuing with parse and upload.")
+        blob_client.upload_blob(blob_name)
 
     try:
         invoice_jsons = parser.parse_invoice(local_file_path)
@@ -206,7 +221,7 @@ def parse_invoice(local_file_path: str, parser=parser, data_path=data_path) -> p
             pl.lit(local_file_path.as_posix()).alias("path"),
             pl.lit(file_hash).alias("file_hash"),
         )
-        df.to_pandas().to_json(output_path, orient="records", mode="a", lines="True")
+        azure_upload_ndjson(df, df_output_blob_name)
         return df
     except ValueError as e:
         logger.error(f"Error: {e}")
@@ -229,6 +244,7 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
         .filter(pl.col("price").cast(pl.Float32) != 0.0)
         .with_columns(pl.col("description").str.to_lowercase().alias("description"))
         .filter(~pl.col("description").str.contains("korting"))
+        .filter(~pl.col("description").str.contains("total payment"))
     )
 
 
@@ -236,8 +252,8 @@ def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
     return [items["description"] for items in items_dicts]
 
 
-async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:float) -> str:
-    invoice_items_df = clean_invoice_df(parse_invoice(local_file_path))
+async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:float, data_path:str) -> str:
+    invoice_items_df = clean_invoice_df(parse_invoice(local_file_path, data_path=data_path))
     total_price = invoice_items_df["price"].sum()
     sofies_pct = sofies_amount/total_price*100 if payer_name.lower() != "sofie" else 100
     maartens_items_df = filter_items(
@@ -438,14 +454,15 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
     try:
         file_id = update.message.document.file_id
         file_info = await bot.get_file(file_id)
-        local_file_path = data_path / f"{file_id}.pdf"
+        local_file_path = Path(data_path) / f"{file_id}.pdf"
         await file_info.download_to_drive(local_file_path)
 
         payer_name = conversation_state[chat_id]["payer_name"]
         group_name = conversation_state[chat_id]["group_name"]
         sofies_amount = conversation_state[chat_id].get("sofie_amount", 0)
 
-        answer = await process_invoice(local_file_path, payer_name=payer_name, sofies_amount=sofies_amount)
+        answer = await process_invoice(local_file_path, payer_name=payer_name, sofies_amount=sofies_amount, 
+                                       data_path=data_path)
         logger.info(answer)
         await bot.send_message(chat_id=chat_id, text=answer)
         conversation_state.pop(chat_id, None)
