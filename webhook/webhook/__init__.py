@@ -3,10 +3,13 @@ import os
 
 import azure.functions as func
 from app import handle_telegram_update
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 async def main(req: func.HttpRequest) -> func.HttpResponse:
     token = req.headers.get("X-Telegram-Bot-Api-Secret-Token")
-
     if not token or token != os.getenv("API_TOKEN"):
         return func.HttpResponse("Unauthorized", status_code=401)
     try:
