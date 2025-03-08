@@ -17,6 +17,14 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r webhook/requirements.txt
+      - name: Deploy Bicep
+        uses: azure/cli@v1
+        with:
+          inlineScript: |
+            az deployment group create \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --template-file infra/azure.bicep
+              --parameters infra/colliparser_params.bicep.bicepparam
       - name: Archive Function App
         run: zip -r webhook.zip webhook
       - name: Deploy to Azure
