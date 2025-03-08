@@ -35,16 +35,22 @@ This guide explains how to set up a webhook for your Telegram bot to handle PDF 
 
 1. **Start ngrok**:
    ```bash
-   ngrok http 5000
+   ngrok http 7071
    ```
    Copy the HTTPS URL provided by ngrok (e.g., `https://xxxx-xx-xx-xxx-xx.ngrok.io`)
 
 2. **Set up the webhook**:
    Replace `YOUR_NGROK_URL` and `YOUR_API_TOKEN` with your values:
    ```bash
-   source .env && curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook" \
+   source webhook/.env && curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook" \
     -H "Content-Type: application/json" \
     -d '{"url": "'${NGROK_URL}'/webhook?code='${FUNCTION_KEY}'", "secret_token": "'${API_TOKEN}'"}'
+   ```
+   **Local Setup Note**: Remove authentication (i.e., `?code=function_key`) when configuring the webhook locally.
+   ```bash
+   source webhook/.env && curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d '{"url": "'${NGROK_URL}'/webhook", "secret_token": "'${API_TOKEN}'"}'
    ```
 
 3. **Start the Flask application**:
@@ -76,3 +82,11 @@ colli_parser/
 ├── data/              # PDF storage
 └── .env               # Environment variables
 ```
+
+## Debugging Locally in VS Code
+Open the `webhook` folder in VS Code and launch the debugger.
+
+## Running in Azure
+1. `az login`
+2. `az deployment group create --resource-group colli_parser --template-file infra/azure.bicep --parameters infra/colliparser_params.bicep.bicepparam`
+3. `func azure functionapp publish colli-parser-func`
