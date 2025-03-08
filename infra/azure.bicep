@@ -19,8 +19,11 @@ param appInsightsName string = '${prefix}-ai'
 @description('Key Vault name (must be globally unique and 3-24 lowercase letters)')
 param keyVaultName string = toLower('${prefix}-kv${uniqueString(resourceGroup().id)}')
 
+// @description('User-Assigned Managed Identity ID for ACR')
+// param acrUserManagedIdentityID string
+
 // Storage Account
-resource storageAccount 'Microsoft.Storage/storageAccounts@2021-09-01' = {
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
   sku: {
@@ -32,23 +35,47 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2021-09-01' = {
   }
 }
 
-// App Service Plan (Consumption)
-resource appServicePlan 'Microsoft.Web/serverfarms@2021-03-01' = {
+// App Service Plan (Elastic Premium)
+resource appServicePlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: planName
   location: location
-  kind: 'linux'
+  kind: 'functionapp,linux'
   sku: {
     name: 'Y1'
     tier: 'Dynamic'
   }
   properties: {
     maximumElasticWorkerCount: 1
-      reserved: true
-    }
+    reserved: true
+  }
 }
+// @description('Azure Container Registry name')
+// param acrName string = toLower('colliparseracr${uniqueString(resourceGroup().id)}')
+
+// // Azure Container Registry
+// resource containerRegistry 'Microsoft.ContainerRegistry/registries@2021-09-01' = {
+//   name: acrName
+//   location: location
+//   sku: {
+//     name: 'Basic'
+//   }
+//   properties: {
+//     adminUserEnabled: true
+//   }
+// }
+
+// // Grant ACR pull access to the Function App
+// resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2020-04-01-preview' = {
+//   name: guid(functionApp.id, 'acrpull')
+//   scope: containerRegistry
+//   properties: {
+//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
+//     principalId: functionApp.identity.principalId
+//   }
+// }
 
 // Function App
-resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp,linux'
@@ -56,9 +83,9 @@ resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
     type: 'SystemAssigned'
   }
   properties: {
-    keyVaultReferenceIdentity: keyVault.id
     serverFarmId: appServicePlan.id
     httpsOnly: true
+    dailyMemoryTimeQuota: 33
     siteConfig: {
       appSettings: [
         {
@@ -101,9 +128,23 @@ resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
           name: 'SPLITWISE_CONSUMER_SECRET'
           value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=splitwise-consumer-secret)'
         }
+        // {
+        //   name: 'DOCKER_REGISTRY_SERVER_PASSWORD'
+        //   value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=acr-password)'
+        // }
+        // {
+        //   name: 'DOCKER_REGISTRY_SERVER_URL'
+        //   value: 'https://colliparseracrxgsu6q7fsqdni.azurecr.io'
+        // }
+        // {
+        //   name: 'DOCKER_REGISTRY_SERVER_USERNAME'
+        //   value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=acr-username)'
+        // }
       ]
-      linuxFxVersion: 'python|3.11'
-      pythonVersion: '3.11'
+      // linuxFxVersion: 'DOCKER|colliparseracrxgsu6q7fsqdni.azurecr.io/colli-parser-function-app:latest'
+      linuxFxVersion: 'PYTHON|3.12'
+      // acrUseManagedIdentityCreds: true
+      // acrUserManagedIdentityID: acrUserManagedIdentityID
     }
   }
 }
@@ -146,7 +187,7 @@ resource keyVaultAccessPolicy 'Microsoft.KeyVault/vaults/accessPolicies@2023-07-
 }
 
 // Key Vault
-resource keyVault 'Microsoft.KeyVault/vaults@2021-06-01-preview' = {
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
   properties: {
