@@ -6,31 +6,46 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check out source
         uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r webhook/requirements.txt
+
       - name: Login to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Deploy Bicep
         uses: azure/cli@v1
         with:
           inlineScript: |
             az deployment group create \
               --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-              --template-file infra/azure.bicep
+              --template-file infra/azure.bicep \
               --parameters infra/colliparser_params.bicep.bicepparam
+
       - name: Archive Function App
         run: zip -r webhook.zip webhook
+
       - name: Deploy to Azure
         uses: azure/functions-action@v1
         with:
