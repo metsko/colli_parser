@@ -5,7 +5,7 @@ param location string = resourceGroup().location
 param prefix string = 'colli-parser'
 
 @description('Unique storage account name (must be globally unique, 3-24 lowercase letters and numbers)')
-param storageAccountName string = toLower('${prefix}sa${uniqueString(resourceGroup().id)}')
+param storageAccountName string = 'colliparsersa123'
 
 @description('Function App name')
 param functionAppName string = '${prefix}-func'
@@ -17,7 +17,7 @@ param planName string = '${prefix}-plan'
 param appInsightsName string = '${prefix}-ai'
 
 @description('Key Vault name (must be globally unique and 3-24 lowercase letters)')
-param keyVaultName string = toLower('${prefix}-kv${uniqueString(resourceGroup().id)}')
+param keyVaultName string = '${prefix}-kv123'
 
 // Storage Account
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
