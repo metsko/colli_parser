@@ -42,9 +42,9 @@ This guide explains how to set up a webhook for your Telegram bot to handle PDF 
 2. **Set up the webhook**:
    Replace `YOUR_NGROK_URL` and `YOUR_API_TOKEN` with your values:
    ```bash
-   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-        -H "Content-Type: application/json" \
-        -d '{"url": "YOUR_NGROK_URL/webhook", "secret_token": "YOUR_API_TOKEN"}'
+   source .env && curl -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d '{"url": "'${NGROK_URL}'/webhook?code='${FUNCTION_KEY}'", "secret_token": "'${API_TOKEN}'"}'
    ```
 
 3. **Start the Flask application**:

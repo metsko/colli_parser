@@ -5,17 +5,19 @@ from typing import List
 
 import polars as pl
 from loguru import logger
-from pdf2image import convert_from_path
 from tqdm import tqdm
 
 from api_client import ChatGPTClient
-from config import config
 from models import Invoice
+import fitz
+import pymupdf
+from azure.storage.blob import BlobServiceClient
 
 
 class InvoiceParser:
-    def __init__(self, api_client: ChatGPTClient):
+    def __init__(self, api_client: ChatGPTClient, output_path: str = "data"):
         self.api_client = api_client
+        self.output_path = output_path
 
     def parse_invoice(self, invoice_path: str) -> Invoice:
         """
@@ -44,39 +46,81 @@ class InvoiceParser:
         """
         Converts each page of the PDF to an image and returns a list of image paths.
         """
-        images = convert_from_path(pdf_path)
+
+        doc = fitz.open(pdf_path)
         image_paths = []
-        for i, image in enumerate(images):
-            image_path = f"data/temp_image_{i}.jpg"
-            image.resize((600, 850)).save(image_path, "JPEG")
+        for i in range(len(doc)):
+            page = doc.load_page(i)
+            zoom_x = 2.0  # horizontal zoom
+            zoom_y = 2.0  # vertical zoom
+            mat = pymupdf.Matrix(zoom_x, zoom_y)  # zoom factor 2 in each dimension
+            pix = page.get_pixmap(matrix=mat)  # use 'mat' instead of the identity matrix
+            image_path = Path(self.output_path)/f"temp_image_{i}.jpg"
+            pix.save(image_path)
+            azure_upload_file(image_path, f"images/temp_image_{i}.jpg")
             image_paths.append(image_path)
+        doc.close()
         return image_paths
 
     def to_json(self, invoice: Invoice) -> str:
         """
         Converts the Invoice object to a JSON string.
         """
-        return invoice.model_dump_json()
+        return invoice.json()
+
+
+def azure_upload_file(local_file_path: str, azure_filename: str):
+    connect_str = os.getenv("AzureWebJobsStorage")
+    if not connect_str:
+        logger.error("AzureWebJobsStorage is not set.")
+        return
+    blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+    container_client = blob_service_client.get_container_client("function")
+    if not container_client.exists():
+        container_client.create_container()
+    with open(local_file_path, "rb") as f:
+        blob_client = container_client.get_blob_client(azure_filename)
+        blob_client.upload_blob(f, overwrite=True)
+    logger.info(f"Uploaded file to Azure container 'function' as {azure_filename}.")
+
+
+def azure_upload_ndjson(df: pl.DataFrame, file_name: str):
+    connect_str = os.getenv("AzureWebJobsStorage")
+    if not connect_str:
+        logger.error("AzureWebJobsStorage is not set.")
+        return
+    blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+    container_client = blob_service_client.get_container_client("function")
+    if not container_client.exists():
+        container_client.create_container()
+    ndjson_content = df.to_pandas().to_json(orient="records", lines=True)
+    blob_client = container_client.get_blob_client(file_name)
+    blob_client.upload_blob(ndjson_content, overwrite=True)
+    logger.info(f"Uploaded NDJSON to Azure container 'function' as {file_name}.")
 
 
 def main():
     files = set(Path("data").rglob("*.pdf"))
-    api_client = ChatGPTClient(config.API_TOKEN)
+    api_client = ChatGPTClient(os.getenv("CHATGPT_API_TOKEN"))
     parser = InvoiceParser(api_client)
+    output_path = "../data"
     for file in tqdm(files, total=len(files)):
         try:
             invoice_jsons = parser.parse_invoice(file)
             json_outputs = list(map(parser.to_json, invoice_jsons))
             df = pl.DataFrame(json_outputs)
             df = df.select(pl.col('column_0').str.json_decode().alias('page_struct')).unnest('page_struct')
-            df.with_columns(pl.lit(file.as_posix()).alias("path")).write_ndjson('data/output.ndjson')
+            df = df.with_columns(pl.lit(file.as_posix()).alias("path"))
+            # Remove local file save:
+            # df.write_ndjson(f'{output_path}/output.ndjson')
+            azure_upload_ndjson(df, "output.ndjson")
         except ValueError as e:
             print(f"Error: {e}")
             logger.error(f"Error: {e}")
         finally:
             # Clean up temporary image files
             for i in range(10):  # Assuming a maximum of 10 pages for simplicity
-                image_path = f"data/temp_image_{i}.jpg"
+                image_path = f"{output_path}/temp_image_{i}.jpg"
                 if os.path.exists(image_path):
                     os.remove(image_path)
 
