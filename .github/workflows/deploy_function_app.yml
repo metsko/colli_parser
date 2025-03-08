@@ -17,6 +17,10 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r webhook/requirements.txt
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       - name: Deploy Bicep
         uses: azure/cli@v1
         with:
