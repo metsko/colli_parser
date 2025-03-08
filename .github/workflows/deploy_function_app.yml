@@ -12,11 +12,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r function_app/webhook/requirements.txt
+          pip install -r webhook/requirements.txt
       - name: Archive Function App
         run: zip -r functionapp.zip function_app
       - name: Deploy to Azure
