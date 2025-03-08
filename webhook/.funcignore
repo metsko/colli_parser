@@ -3,3 +3,4 @@ docker
 .venv
 __pycache__
 __.python_packages
+.env
