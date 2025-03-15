@@ -79,7 +79,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         }
         {
           name: 'CHATGPT_API_TOKEN'
-          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=chatgpt-api-token)'
+          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=mistral-api-token)'
         }
         {
           name: 'TELEGRAM_TOKEN'

@@ -7,7 +7,7 @@ import polars as pl
 from loguru import logger
 from tqdm import tqdm
 
-from api_client import ChatGPTClient
+from api_client import MistralAIClient
 from models import Invoice
 import fitz
 import pymupdf
@@ -15,7 +15,7 @@ from azure.storage.blob import BlobServiceClient
 
 
 class InvoiceParser:
-    def __init__(self, api_client: ChatGPTClient, output_path: str = "data"):
+    def __init__(self, api_client: MistralAIClient, output_path: str = "data"):
         self.api_client = api_client
         self.output_path = output_path
 
@@ -51,8 +51,8 @@ class InvoiceParser:
         image_paths = []
         for i in range(len(doc)):
             page = doc.load_page(i)
-            zoom_x = 2.0  # horizontal zoom
-            zoom_y = 2.0  # vertical zoom
+            zoom_x = 4.0  # horizontal zoom
+            zoom_y = 4.0  # vertical zoom
             mat = pymupdf.Matrix(zoom_x, zoom_y)  # zoom factor 2 in each dimension
             pix = page.get_pixmap(matrix=mat)  # use 'mat' instead of the identity matrix
             image_path = Path(self.output_path)/f"temp_image_{i}.jpg"
@@ -66,7 +66,7 @@ class InvoiceParser:
         """
         Converts the Invoice object to a JSON string.
         """
-        return invoice.json()
+        return invoice.model_dump_json()
 
 
 def azure_upload_file(local_file_path: str, azure_filename: str):
@@ -101,7 +101,7 @@ def azure_upload_ndjson(df: pl.DataFrame, file_name: str):
 
 def main():
     files = set(Path("data").rglob("*.pdf"))
-    api_client = ChatGPTClient(os.getenv("CHATGPT_API_TOKEN"))
+    api_client = MistralAIClient(os.getenv("MISTRAL_API_TOKEN"))
     parser = InvoiceParser(api_client)
     output_path = "../data"
     for file in tqdm(files, total=len(files)):
