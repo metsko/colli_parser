@@ -78,7 +78,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: appInsights.properties.InstrumentationKey
         }
         {
-          name: 'CHATGPT_API_TOKEN'
+          name: 'MISTRAL_API_TOKEN'
           value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=mistral-api-token)'
         }
         {
