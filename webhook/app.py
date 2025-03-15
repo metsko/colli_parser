@@ -1,12 +1,16 @@
 import difflib
 import hashlib
+import io
 import math
 import os
 from pathlib import Path
 from typing import Dict, List
 
 import polars as pl
+from api_client import MistralAIClient
+from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
+from invoice_parser import InvoiceParser, azure_upload_ndjson
 from loguru import logger
 from splitwise import Splitwise
 from splitwise.expense import Expense
@@ -14,11 +18,6 @@ from splitwise.group import Group
 from splitwise.user import ExpenseUser
 from tabulate import tabulate
 from telegram import Bot, Update
-from azure.storage.blob import BlobServiceClient
-import io
-
-from api_client import ChatGPTClient
-from invoice_parser import InvoiceParser, azure_upload_ndjson, azure_upload_file
 from utils import get_hash_map
 
 env_path = ".env"
@@ -32,7 +31,8 @@ API_TOKEN = os.getenv("API_TOKEN")
 CHATGPT_API_TOKEN = os.getenv("CHATGPT_API_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
-api_client = ChatGPTClient(CHATGPT_API_TOKEN)
+# api_client = ChatGPTClient(CHATGPT_API_TOKEN)
+api_client = MistralAIClient(os.getenv("MISTRAL_API_TOKEN"))
 parser = InvoiceParser(api_client)
 
 # SPLITWISE_GROUP=
@@ -75,12 +75,11 @@ def register_splitwise_expense(
     friend_names: List = None,
     maartens_owe_percentage: float = None,
     sofies_pct: float = 0,
-    group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME
+    group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME,
 ):
-
-    price = item_dict["price"]
+    price = item_dict["adjusted_price"]
     description = item_dict["description"]
-    
+
     group = get_group(group_name)
     members = group.members
     available_members = [f.first_name for f in members]
@@ -115,7 +114,7 @@ def register_splitwise_expense(
         "Maarten's percentage should be less than or equal to 1."
     )
     if payer_name == "maarten":
-        maartens_paid_share = price*(1-sofies_pct/100)
+        maartens_paid_share = price * (1 - sofies_pct / 100)
         maarten_exp.setPaidShare(maartens_paid_share)
     else:
         maarten_exp.setPaidShare(0)
@@ -145,9 +144,9 @@ def register_splitwise_expense(
         friends_name = friend.first_name.lower().strip()
         payer_name = payer_name.lower().strip()
         if friends_name == "sofie":
-            friend_exp.setPaidShare(price*sofies_pct/100)
+            friend_exp.setPaidShare(price * sofies_pct / 100)
         elif friends_name == payer_name:
-            friend_exp.setPaidShare(price*(1-sofies_pct/100))
+            friend_exp.setPaidShare(price * (1 - sofies_pct / 100))
         else:
             friend_exp.setPaidShare(0)
         friend_exp.setOwedShare(equal_share)
@@ -165,7 +164,7 @@ def register_splitwise_expenses(
     friend_names: List = None,
     maartens_owe_percentage: float = None,
     group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME,
-    sofies_pct: float = None
+    sofies_pct: float = None,
 ):
     for item in items:
         register_splitwise_expense(
@@ -174,7 +173,7 @@ def register_splitwise_expenses(
             friend_names,
             maartens_owe_percentage=maartens_owe_percentage,
             group_name=group_name,
-            sofies_pct=sofies_pct
+            sofies_pct=sofies_pct,
         )
 
 
@@ -185,17 +184,24 @@ def calculate_file_hash(file_path: str) -> str:
         hasher.update(buf)
     return hasher.hexdigest()
 
+
 def parse_invoice(local_file_path: str, data_path=data_path) -> pl.DataFrame:
     parser = InvoiceParser(api_client, output_path=data_path)
     file_hash = calculate_file_hash(local_file_path)
     container_name = "function"
     df_output_blob_name = "output.ndjson"
     blob_name = f"invoices/{file_hash}.pdf"
-    blob_service_client = BlobServiceClient.from_connection_string(os.getenv("AzureWebJobsStorage"))
-    blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+    blob_service_client = BlobServiceClient.from_connection_string(
+        os.getenv("AzureWebJobsStorage")
+    )
+    blob_client = blob_service_client.get_blob_client(
+        container=container_name, blob=blob_name
+    )
     if blob_client.exists():
         logger.info(f"Blob {blob_name} already exists in container {container_name}.")
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=df_output_blob_name)
+        blob_client = blob_service_client.get_blob_client(
+            container=container_name, blob=df_output_blob_name
+        )
         output_stream = blob_client.download_blob().readall()
         df_existing = pl.read_ndjson(io.BytesIO(output_stream))
         if file_hash in df_existing["file_hash"].to_list():
@@ -205,7 +211,8 @@ def parse_invoice(local_file_path: str, data_path=data_path) -> pl.DataFrame:
             return df_existing.filter(pl.col("file_hash") == file_hash)
         else:
             logger.info(
-                f"File hash {file_hash} not found in existing output. Continuing with parse and upload to df.")
+                f"File hash {file_hash} not found in existing output. Continuing with parse and upload to df."
+            )
     else:
         logger.info(f"Blob {blob_name} not found, continuing with parse and upload.")
         blob_client.upload_blob(blob_name)
@@ -232,19 +239,67 @@ def filter_items(invoice_items_df: pl.DataFrame, items: List[str]) -> pl.DataFra
         "max_similarity_ratio", descending=True
     )
 
-    return output.select("description", "price")
+    return output.select("description", "adjusted_price")
+
+
+def group_waarborg_fields(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
+    waarborg_filter = pl.col("description").str.contains("waarborg")
+    waarborg_df = invoice_items_df.filter(waarborg_filter)
+    return pl.concat(
+        [
+            invoice_items_df.filter(~waarborg_filter),
+            waarborg_df.group_by(pl.lit(1)).agg(
+                pl.exclude(["adjusted_price"]).first(),
+                pl.sum("adjusted_price").alias("adjusted_price")
+            ).with_columns(pl.lit("waarborg net").alias("description")).drop("literal"),
+        ]
+    )
 
 
 def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
-    return (
+    total_amount_filter = pl.col("description").str.contains(
+        "total payment|total amount"
+    )
+    # First extract the total amount from any row with korting/total payment/total amount due
+    invoice_items_df = (
         invoice_items_df.explode("items")
         .unnest("items")
         .filter(pl.col("description").is_not_null())
         .filter(pl.col("price").is_not_null())
-        .filter(pl.col("price").cast(pl.Float32) != 0.0)
         .with_columns(pl.col("description").str.to_lowercase().alias("description"))
-        .filter(~pl.col("description").str.contains("korting"))
-        .filter(~pl.col("description").str.contains("total payment"))
+        .with_columns(
+            pl.when(pl.col("description").shift(-1).str.contains("korting"))
+            .then(-pl.col("price").shift(-1))
+            .otherwise(pl.lit(0.0))
+            .alias("discount")
+        )
+    )
+
+    # Get total amount if available (use first match if multiple rows)
+    total_amount_df = invoice_items_df.filter(total_amount_filter)
+    total_amount = (
+        total_amount_df["price"][0] if not total_amount_df.is_empty() else None
+    )
+
+    # apple due to xtra sign similar to an apple
+    not_a_product_filter = pl.col("description").str.contains(
+        "total payment|total amount|korting|apple"
+    )
+    cleaned_df = (
+        invoice_items_df.filter(~not_a_product_filter)
+        # Adjust price by discount
+        .with_columns((pl.col("price") - pl.col("discount")).alias("adjusted_price"))
+    )
+
+    # Add total_amount as a column and check for discrepancy
+    sum_price = cleaned_df["adjusted_price"].sum()
+    if total_amount is not None and abs(sum_price - total_amount) > 0.01:
+        logger.warning(
+            f"Sum of items ({sum_price}) differs from total amount ({total_amount})"
+        )
+
+    return group_waarborg_fields(
+        cleaned_df.with_columns(pl.lit(total_amount).alias("total_amount"))
     )
 
 
@@ -252,10 +307,16 @@ def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
     return [items["description"] for items in items_dicts]
 
 
-async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:float, data_path:str) -> str:
-    invoice_items_df = clean_invoice_df(parse_invoice(local_file_path, data_path=data_path))
-    total_price = invoice_items_df["price"].sum()
-    sofies_pct = sofies_amount/total_price*100 if payer_name.lower() != "sofie" else 100
+async def process_invoice(
+    local_file_path: str, payer_name: str, sofies_amount: float, data_path: str
+) -> str:
+    invoice_items_df = clean_invoice_df(
+        parse_invoice(local_file_path, data_path=data_path)
+    )
+    total_price = invoice_items_df["adjusted_price"].sum()
+    sofies_pct = (
+        sofies_amount / total_price * 100 if payer_name.lower() != "sofie" else 100
+    )
     maartens_items_df = filter_items(
         invoice_items_df,
         [
@@ -276,7 +337,7 @@ async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:f
         payer_name=payer_name,
         friend_names=["Sofie"],
         maartens_owe_percentage=1,
-        sofies_pct=sofies_pct
+        sofies_pct=sofies_pct,
     )
 
     sofies_items_df = filter_items(
@@ -289,7 +350,7 @@ async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:f
         payer_name=payer_name,
         friend_names=["Sofie"],
         maartens_owe_percentage=0,
-        sofies_pct=sofies_pct
+        sofies_pct=sofies_pct,
     )
 
     common_items_df = filter_items(
@@ -297,7 +358,7 @@ async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:f
         ["toiletpapier", "handzeep", "ontstopper", "allesreiniger", "afwasmiddel"],
     )
     common_items_descriptions = common_items_df["description"].to_list()
-    #register_splitwise_expenses(common_items_df.to_dicts(), group_name=BLIJDEBERG_SW_GROUP_NAME, sofies_pct=sofies_pct)
+    # register_splitwise_expenses(common_items_df.to_dicts(), group_name=BLIJDEBERG_SW_GROUP_NAME, sofies_pct=sofies_pct)
 
     not_rest_items = (
         common_items_descriptions
@@ -307,7 +368,9 @@ async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:f
     rest_items_df = invoice_items_df.filter(pl.col("description").is_not_null()).filter(
         ~pl.col("description").is_in(not_rest_items)
     )
-    register_splitwise_expenses(rest_items_df.to_dicts(), payer_name=payer_name, sofies_pct=sofies_pct)
+    register_splitwise_expenses(
+        rest_items_df.to_dicts(), payer_name=payer_name, sofies_pct=sofies_pct
+    )
 
     answer = f"Registered the Maartens items: \n{tabulate(maartens_items_df.to_pandas())}\n\n"
     answer += (
@@ -316,7 +379,7 @@ async def process_invoice(local_file_path: str, payer_name: str, sofies_amount:f
     answer += (
         f"Registered the common items: \n{tabulate(common_items_df.to_pandas())}\n\n"
     )
-    answer += f"Registered the rest items: \n{tabulate(rest_items_df.select('description', 'price').to_pandas())}\n\n"
+    answer += f"Registered the rest items: \n{tabulate(rest_items_df.select('description', 'adjusted_price').to_pandas())}\n\n"
 
     return answer
 
@@ -336,6 +399,7 @@ def get_available_members(group_name: str) -> List[str]:
     if group:
         return [f.first_name for f in group.members]
     return []
+
 
 async def handle_telegram_update(update_data: dict, data_path=data_path) -> None:
     update = Update.de_json(update_data, bot)
@@ -399,7 +463,7 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
         )
         await bot.send_message(chat_id=chat_id, text=message)
         return
-    
+
         # Handle payer name
     if current_state == "WAIT_FOR_PAYER":
         payer_name = text.strip().lower()
@@ -436,7 +500,9 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
             conversation_state[chat_id].update(
                 {"state": "WAIT_FOR_PDF", "sofie_amount": sofie_amount}
             )
-            message = f"Sofie's amount: {sofie_amount}. {CONVERSATION_STATES['WAIT_FOR_PDF']}"
+            message = (
+                f"Sofie's amount: {sofie_amount}. {CONVERSATION_STATES['WAIT_FOR_PDF']}"
+            )
             await bot.send_message(chat_id=chat_id, text=message)
         except ValueError:
             await bot.send_message(chat_id=chat_id, text="Please enter a valid amount.")
@@ -461,8 +527,12 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
         group_name = conversation_state[chat_id]["group_name"]
         sofies_amount = conversation_state[chat_id].get("sofie_amount", 0)
 
-        answer = await process_invoice(local_file_path, payer_name=payer_name, sofies_amount=sofies_amount, 
-                                       data_path=data_path)
+        answer = await process_invoice(
+            local_file_path,
+            payer_name=payer_name,
+            sofies_amount=sofies_amount,
+            data_path=data_path,
+        )
         logger.info(answer)
         await bot.send_message(chat_id=chat_id, text=answer)
         conversation_state.pop(chat_id, None)

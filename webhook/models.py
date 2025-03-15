@@ -5,6 +5,7 @@ class Item(BaseModel):
     unit_price: float = Field(description="The price of a single unit of the item.")
     unit: str = Field(description="The unit of the item (e.g., 'kg', 'piece').")
     amount: int = Field(description="The quantity of the item.")
+    discount: float = Field(description="Discount on the item in euros.")
     price: float = Field(description="Price for item, unit*unit_price")
     description: str = Field(description="The description of the item.")
     category: Literal['Fruits', 'Vegetables', 'Cookies_snacks', 'Meat', 'Fish', 'Coffee', 'Milk', 'Garbage_bags', 'soft_drink', 'Cleaning_product', 'cooking', 'baking', 'tools']
