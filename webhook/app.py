@@ -77,7 +77,7 @@ def register_splitwise_expense(
     sofies_pct: float = 0,
     group_name: str = SOFIE_MAARTEN_SW_GROUP_NAME,
 ):
-    price = item_dict["adjusted_price"]
+    price = item_dict["adjusted_amount"]
     description = item_dict["description"]
 
     group = get_group(group_name)
@@ -239,7 +239,7 @@ def filter_items(invoice_items_df: pl.DataFrame, items: List[str]) -> pl.DataFra
         "max_similarity_ratio", descending=True
     )
 
-    return output.select("description", "adjusted_price")
+    return output.select("description", "adjusted_amount")
 
 
 def group_waarborg_fields(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
@@ -249,8 +249,8 @@ def group_waarborg_fields(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
         [
             invoice_items_df.filter(~waarborg_filter),
             waarborg_df.group_by(pl.lit(1)).agg(
-                pl.exclude(["adjusted_price"]).first(),
-                pl.sum("adjusted_price").alias("adjusted_price")
+                pl.exclude(["adjusted_amount"]).first(),
+                pl.sum("adjusted_amount").alias("adjusted_amount")
             ).with_columns(pl.lit("waarborg net").alias("description")).drop("literal"),
         ]
     )
@@ -265,11 +265,16 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
         invoice_items_df.explode("items")
         .unnest("items")
         .filter(pl.col("description").is_not_null())
-        .filter(pl.col("price").is_not_null())
+        # 0.0 not allowed in splitwise
+        .filter(~pl.col("unit_price").is_in([None, 0.0]))
+        .filter(pl.col("weight").is_not_null())
+        .filter(pl.col("quantity").is_not_null())
+        .with_columns(pl.when(pl.col("unit")=='piece').then(pl.col('quantity')).otherwise(pl.col("weight")).alias("adjusted_quantity"))
+        .with_columns((pl.col("unit_price") * pl.col("adjusted_quantity")).round(decimals=2).alias("total_amount"))
         .with_columns(pl.col("description").str.to_lowercase().alias("description"))
         .with_columns(
             pl.when(pl.col("description").shift(-1).str.contains("korting"))
-            .then(-pl.col("price").shift(-1))
+            .then(-pl.col("total_amount").shift(-1))
             .otherwise(pl.lit(0.0))
             .alias("discount")
         )
@@ -278,7 +283,7 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     # Get total amount if available (use first match if multiple rows)
     total_amount_df = invoice_items_df.filter(total_amount_filter)
     total_amount = (
-        total_amount_df["price"][0] if not total_amount_df.is_empty() else None
+        total_amount_df["total_amount_invoice"][0] if not total_amount_df.is_empty() else None
     )
 
     # apple due to xtra sign similar to an apple
@@ -288,11 +293,11 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     cleaned_df = (
         invoice_items_df.filter(~not_a_product_filter)
         # Adjust price by discount
-        .with_columns((pl.col("price") - pl.col("discount")).alias("adjusted_price"))
+        .with_columns((pl.col("total_amount") - pl.col("discount")).alias("adjusted_amount"))
     )
 
     # Add total_amount as a column and check for discrepancy
-    sum_price = cleaned_df["adjusted_price"].sum()
+    sum_price = cleaned_df["adjusted_amount"].sum()
     if total_amount is not None and abs(sum_price - total_amount) > 0.01:
         logger.warning(
             f"Sum of items ({sum_price}) differs from total amount ({total_amount})"
@@ -313,7 +318,7 @@ async def process_invoice(
     invoice_items_df = clean_invoice_df(
         parse_invoice(local_file_path, data_path=data_path)
     )
-    total_price = invoice_items_df["adjusted_price"].sum()
+    total_price = invoice_items_df["adjusted_amount"].sum()
     sofies_pct = (
         sofies_amount / total_price * 100 if payer_name.lower() != "sofie" else 100
     )
@@ -379,7 +384,7 @@ async def process_invoice(
     answer += (
         f"Registered the common items: \n{tabulate(common_items_df.to_pandas())}\n\n"
     )
-    answer += f"Registered the rest items: \n{tabulate(rest_items_df.select('description', 'adjusted_price').to_pandas())}\n\n"
+    answer += f"Registered the rest items: \n{tabulate(rest_items_df.select('description', 'adjusted_amount').to_pandas())}\n\n"
 
     return answer
 

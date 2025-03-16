@@ -11,7 +11,7 @@ class MistralAIClient:
     def __init__(self, api_token: str):
         self.client = Mistral(api_key=api_token)
 
-    def get_response(self, image_path: str, response_format=Invoice):
+    def get_response(self, image_path: str):
         """
         Sends an image to the Mistral AI OCR API and returns structured data.
         """
@@ -69,4 +69,12 @@ class MistralAIClient:
         )
 
         return chat_response.choices[0].message.parsed
+    
+if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    load_dotenv("webhook/.env")
+    api_client = MistralAIClient(api_token=os.getenv("MISTRAL_API_TOKEN"))
+    response = api_client.get_response("data/temp_image_0.jpg")
+    print(response)
 
