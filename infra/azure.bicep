@@ -58,7 +58,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   properties: {
     serverFarmId: appServicePlan.id
     httpsOnly: true
-    dailyMemoryTimeQuota: 33
+    dailyMemoryTimeQuota: 100
     siteConfig: {
       appSettings: [
         {
