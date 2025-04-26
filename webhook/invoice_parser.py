@@ -1,7 +1,7 @@
 import os
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Union
 
 import polars as pl
 from loguru import logger
@@ -15,16 +15,35 @@ from azure.storage.blob import BlobServiceClient
 
 
 class InvoiceParser:
-    def __init__(self, api_client: MistralAIClient, output_path: str = "data"):
+    def __init__(self, api_client: MistralAIClient = None, output_path: str = "data"):
         self.api_client = api_client
         self.output_path = output_path
 
-    def parse_invoice(self, invoice_path: str) -> Invoice:
+    def parse_invoice(self, invoice_path: str) -> Union[Invoice, List[Invoice]]:
         """
-        Parses the invoice PDF and extracts relevant information by processing each page as an image.
+        Parses the invoice PDF and extracts relevant information.
+        Uses direct PDF OCR if possible, otherwise falls back to image-based OCR.
         """
         logger.info(f"Parsing invoice: {invoice_path}")
         start_time = time.time()
+        
+        # Check if the file is a PDF
+        if invoice_path.lower().endswith('.pdf'):
+            try:
+                # Try direct PDF OCR processing first
+                logger.info(f"Using direct PDF OCR for: {invoice_path}")
+                result = self.api_client.get_response(invoice_path)
+                end_time = time.time()
+                logger.info(
+                    f"Successfully parsed PDF directly: {invoice_path} in {end_time - start_time:.2f} seconds"
+                )
+                return result
+            except Exception as e:
+                logger.warning(f"Direct PDF OCR failed, falling back to image-based method: {e}")
+                # Fall back to image-based method
+                pass
+        
+        # Traditional image-based method as fallback
         try:
             image_paths = self.pdf_to_image(invoice_path)
         except Exception as e:
@@ -35,7 +54,7 @@ class InvoiceParser:
             jsons = list(map(self.api_client.get_response, image_paths))
             end_time = time.time()
             logger.info(
-                f"Successfully parsed invoice: {invoice_path} in {end_time - start_time:.2f} seconds"
+                f"Successfully parsed invoice using images: {invoice_path} in {end_time - start_time:.2f} seconds"
             )
             return jsons
         except Exception as e:
@@ -54,11 +73,31 @@ class InvoiceParser:
             zoom_x = 4.0  # horizontal zoom
             zoom_y = 4.0  # vertical zoom
             mat = pymupdf.Matrix(zoom_x, zoom_y)  # zoom factor 2 in each dimension
-            pix = page.get_pixmap(matrix=mat)  # use 'mat' instead of the identity matrix
-            image_path = Path(self.output_path)/f"temp_image_{i}.jpg"
-            pix.save(image_path)
-            azure_upload_file(image_path, f"images/temp_image_{i}.jpg")
-            image_paths.append(image_path)
+            
+            # Create two pixmaps: top half (A) and bottom half (B)
+            # Get page rectangle and middle point
+            rect = page.rect  # the page rectangle
+            mid_y = (rect.y0 + rect.y1) / 2  # y-coordinate of the middle point
+            
+            # Top half (A) - from top to middle height
+            clip_a = pymupdf.Rect(rect.x0, rect.y0, rect.x1, mid_y)
+            pix_a = page.get_pixmap(matrix=mat, clip=clip_a)
+            image_path_a = Path(self.output_path)/f"temp_image_{i}_A.jpg"
+            pix_a.save(image_path_a)
+            # Only upload to Azure if connection string is available
+            if os.getenv("AzureWebJobsStorage"):
+                azure_upload_file(str(image_path_a), f"images/temp_image_{i}_A.jpg")
+            image_paths.append(str(image_path_a))
+            
+            # Bottom half (B) - from middle height to bottom
+            clip_b = pymupdf.Rect(rect.x0, mid_y, rect.x1, rect.y1)
+            pix_b = page.get_pixmap(matrix=mat, clip=clip_b)
+            image_path_b = Path(self.output_path)/f"temp_image_{i}_B.jpg"
+            pix_b.save(image_path_b)
+            # Only upload to Azure if connection string is available
+            if os.getenv("AzureWebJobsStorage"):
+                azure_upload_file(str(image_path_b), f"images/temp_image_{i}_B.jpg")
+            image_paths.append(str(image_path_b))
         doc.close()
         return image_paths
 
@@ -106,23 +145,26 @@ def main():
     output_path = "../data"
     for file in tqdm(files, total=len(files)):
         try:
-            invoice_jsons = parser.parse_invoice(file)
-            json_outputs = list(map(parser.to_json, invoice_jsons))
-            df = pl.DataFrame(json_outputs)
-            df = df.select(pl.col('column_0').str.json_decode().alias('page_struct')).unnest('page_struct')
+            invoice_result = parser.parse_invoice(file)
+            
+            # Handle both single Invoice and list of Invoices
+            if isinstance(invoice_result, list):
+                json_outputs = list(map(parser.to_json, invoice_result))
+                df = pl.DataFrame(json_outputs)
+                df = df.select(pl.col('column_0').str.json_decode().alias('page_struct')).unnest('page_struct')
+            else:
+                # Single Invoice from direct PDF OCR
+                json_output = parser.to_json(invoice_result)
+                df = pl.DataFrame([json_output])
+                df = df.select(pl.col('column_0').str.json_decode().alias('page_struct')).unnest('page_struct')
+                
             df = df.with_columns(pl.lit(file.as_posix()).alias("path"))
             # Remove local file save:
             # df.write_ndjson(f'{output_path}/output.ndjson')
             azure_upload_ndjson(df, "output.ndjson")
-        except ValueError as e:
-            print(f"Error: {e}")
-            logger.error(f"Error: {e}")
-        finally:
-            # Clean up temporary image files
-            for i in range(10):  # Assuming a maximum of 10 pages for simplicity
-                image_path = f"{output_path}/temp_image_{i}.jpg"
-                if os.path.exists(image_path):
-                    os.remove(image_path)
+        except Exception as e:
+            logger.error(f"Failed to parse invoice: {e}")
+            raise ValueError(f"Failed to parse invoice: {e}")
 
 
 if __name__ == "__main__":
