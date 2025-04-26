@@ -8,12 +8,12 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-async def main(req: func.HttpRequest) -> func.HttpResponse:
-    token = req.headers.get("X-Telegram-Bot-Api-Secret-Token")
+async def main(webhook: func.HttpRequest) -> func.HttpResponse:
+    token = webhook.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if not token or token != os.getenv("API_TOKEN"):
         return func.HttpResponse("Unauthorized", status_code=401)
     try:
-        update_data = req.get_json()
+        update_data = webhook.get_json()
         await handle_telegram_update(update_data)
         return func.HttpResponse(
             

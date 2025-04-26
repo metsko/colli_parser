@@ -1,7 +1,7 @@
 {
-    "azureFunctions.deploySubpath": "function_app/webhook",
+    "azureFunctions.deploySubpath": "webhook",
     "azureFunctions.scmDoBuildDuringDeployment": true,
-    "azureFunctions.pythonVenv": "function_app/webhook/.venv",
+    "azureFunctions.pythonVenv": "webhook/.venv",
     "azureFunctions.projectLanguage": "Python",
     "azureFunctions.projectRuntime": "~4",
     "debug.internalConsoleOptions": "neverOpen",
