@@ -7,10 +7,8 @@ from pathlib import Path
 from typing import Dict, List
 
 import polars as pl
-from api_client import MistralAIClient
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
-from invoice_parser import InvoiceParser, azure_upload_ndjson
 from loguru import logger
 from splitwise import Splitwise
 from splitwise.expense import Expense
@@ -18,6 +16,9 @@ from splitwise.group import Group
 from splitwise.user import ExpenseUser
 from tabulate import tabulate
 from telegram import Bot, Update
+
+from api_client import MistralAIClient
+from invoice_parser import InvoiceParser, azure_upload_ndjson
 from utils import get_hash_map
 
 env_path = ".env"
@@ -107,6 +108,7 @@ def register_splitwise_expense(
     expense.setGroupId(group.id)
     expense.setCost(price)
     expense.setDescription(description)
+    expense.setDate(item_dict.get("date", None))
     maarten_exp = ExpenseUser()
     maarten_exp.setId(current.id)
 
@@ -219,9 +221,8 @@ def parse_invoice(local_file_path: str, data_path=data_path) -> pl.DataFrame:
 
     try:
         local_file_path_str = local_file_path.as_posix()
-        invoice_json = parser.parse_invoice(local_file_path_str)   
-        json_output = invoice_json.model_dump_json()
-        df = pl.DataFrame([json_output])
+        invoice_json = parser.parse_invoice(local_file_path_str).model_dump_json()
+        df = pl.DataFrame([invoice_json])
         df = df.select(
             pl.col("column_0").str.json_decode().alias("page_struct")
         ).unnest("page_struct")
@@ -240,21 +241,34 @@ def filter_items(invoice_items_df: pl.DataFrame, items: List[str]) -> pl.DataFra
         "max_similarity_ratio", descending=True
     )
 
-    return output.select("description", "adjusted_amount")
+    # Make sure to preserve the date field if it exists in the dataframe
+    columns_to_select = ["description", "adjusted_amount"]
+    if "date" in invoice_items_df.columns:
+        columns_to_select.append("date")
+    
+    return output.select(columns_to_select)
 
 
 def group_waarborg_fields(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     waarborg_filter = pl.col("description").str.contains("waarborg")
     waarborg_df = invoice_items_df.filter(waarborg_filter)
+    
+    if waarborg_df.is_empty():
+        return invoice_items_df
+        
     return pl.concat(
         [
             invoice_items_df.filter(~waarborg_filter),
-            waarborg_df.group_by(pl.lit(1)).agg(
+            waarborg_df.group_by(pl.lit(1))
+            .agg(
                 pl.exclude(["adjusted_amount"]).first(),
-                pl.sum("adjusted_amount").alias("adjusted_amount")
-            ).select(invoice_items_df.columns).with_columns(pl.lit("waarborg net").alias("description")),
+                pl.sum("adjusted_amount").alias("adjusted_amount"),
+            )
+            .select(invoice_items_df.columns)
+            .with_columns(pl.lit("waarborg net").alias("description")),
         ]
     )
+
 
 def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     total_amount_filter = pl.col("description").str.contains(
@@ -266,9 +280,10 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
         pl.col("next_description").str.to_lowercase().str.starts_with("korting")
         ).then(pl.col("next_discount")
         ).otherwise(
-            pl.when(pl.col("description").str.contains("korting"))
-            .then(pl.col("discount"))
-            .otherwise(pl.lit(0.0))
+            # pl.when(pl.col("description").str.contains("korting"))
+            # .then(pl.col("discount"))
+            # .otherwise(pl.lit(0.0))
+            pl.col("discount")
         ).alias("discount")
     )
 
@@ -311,9 +326,12 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
             f"Sum of items ({sum_price}) differs from total amount ({total_amount})"
         )
 
-    return group_waarborg_fields(
-        cleaned_df.with_columns(pl.lit(total_amount).alias("total_amount"))
-    )
+    # Add date back to each row if we had captured it earlier
+    cleaned_df_with_total = cleaned_df.with_columns(pl.lit(total_amount).alias("total_amount"))
+    if invoice_date:
+        cleaned_df_with_total = cleaned_df_with_total.with_columns(pl.lit(invoice_date).alias("date"))
+        
+    return group_waarborg_fields(cleaned_df_with_total)
 
 
 def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
