@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
+import numpy as np
 import polars as pl
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
@@ -245,17 +246,17 @@ def filter_items(invoice_items_df: pl.DataFrame, items: List[str]) -> pl.DataFra
     columns_to_select = ["description", "adjusted_amount"]
     if "date" in invoice_items_df.columns:
         columns_to_select.append("date")
-    
+
     return output.select(columns_to_select)
 
 
 def group_waarborg_fields(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     waarborg_filter = pl.col("description").str.contains("waarborg")
     waarborg_df = invoice_items_df.filter(waarborg_filter)
-    
+
     if waarborg_df.is_empty():
         return invoice_items_df
-        
+
     return pl.concat(
         [
             invoice_items_df.filter(~waarborg_filter),
@@ -277,14 +278,16 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
 
     adjusted_discount = (
         pl.when(
-        pl.col("next_description").str.to_lowercase().str.starts_with("korting")
-        ).then(pl.col("next_discount")
-        ).otherwise(
+            pl.col("next_description").str.to_lowercase().str.starts_with("korting")
+        )
+        .then(pl.col("next_discount"))
+        .otherwise(
             # pl.when(pl.col("description").str.contains("korting"))
             # .then(pl.col("discount"))
             # .otherwise(pl.lit(0.0))
             pl.col("discount")
-        ).alias("discount")
+        )
+        .alias("discount")
     )
 
     # First extract the total amount from any row with korting/total payment/total amount due
@@ -292,21 +295,33 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
         invoice_items_df.explode("items")
         .unnest("items")
         .filter(pl.col("description").is_not_null())
-        .with_columns((pl.col("quantity")*pl.col("unit_price")).round(2).alias("price"))
-        .with_columns(pl.col("description").str.to_lowercase().alias("description"))
-        .with_columns([
-            pl.col("discount").shift(-1).alias("next_discount"),
-            pl.col("description").shift(-1).alias("next_description"),
-        ])
         .with_columns(
-            pl.when(pl.col("next_description").str.to_lowercase().str.starts_with("korting")).then((pl.col("description") + " "+ pl.col("next_description"))).otherwise(pl.col("description")).alias("description")
-        ).with_columns(adjusted_discount)  
+            (pl.col("quantity") * pl.col("unit_price")).round(2).alias("price")
+        )
+        .with_columns(pl.col("description").str.to_lowercase().alias("description"))
+        .with_columns(
+            [
+                pl.col("discount").shift(-1).alias("next_discount"),
+                pl.col("description").shift(-1).alias("next_description"),
+            ]
+        )
+        .with_columns(
+            pl.when(
+                pl.col("next_description").str.to_lowercase().str.starts_with("korting")
+            )
+            .then((pl.col("description") + " " + pl.col("next_description")))
+            .otherwise(pl.col("description"))
+            .alias("description")
+        )
+        .with_columns(adjusted_discount)
     )
 
     # Get total amount if available (use first match if multiple rows)
     total_amount_df = invoice_items_df.filter(total_amount_filter)
     total_amount = (
-        total_amount_df["total_amount_invoice"][0] if not total_amount_df.is_empty() else None
+        total_amount_df["total_amount_invoice"][0]
+        if not total_amount_df.is_empty()
+        else None
     )
 
     # apple due to xtra sign similar to an apple
@@ -316,21 +331,27 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     cleaned_df = (
         invoice_items_df.filter(~not_a_product_filter)
         # Adjust price by discount
-        .with_columns((pl.col("price")*(1 - (pl.col("discount")/100))).round(2).alias("adjusted_amount"))
+        .with_columns(
+            (pl.col("price") * (1 - (pl.col("discount") / 100)))
+            .round(2)
+            .alias("adjusted_amount")
+        )
     )
 
     # Add total_amount as a column and check for discrepancy
     sum_price = cleaned_df["adjusted_amount"].sum()
     if total_amount is not None and abs(sum_price - total_amount) > 0.01:
-        print(
-            f"Sum of items ({sum_price}) differs from total amount ({total_amount})"
-        )
+        print(f"Sum of items ({sum_price}) differs from total amount ({total_amount})")
 
     # Add date back to each row if we had captured it earlier
-    cleaned_df_with_total = cleaned_df.with_columns(pl.lit(total_amount).alias("total_amount"))
+    cleaned_df_with_total = cleaned_df.with_columns(
+        pl.lit(total_amount).alias("total_amount")
+    )
     if invoice_date:
-        cleaned_df_with_total = cleaned_df_with_total.with_columns(pl.lit(invoice_date).alias("date"))
-        
+        cleaned_df_with_total = cleaned_df_with_total.with_columns(
+            pl.lit(invoice_date).alias("date")
+        )
+
     return group_waarborg_fields(cleaned_df_with_total)
 
 
@@ -362,7 +383,7 @@ async def process_invoice(
             "roomijs vanille",
             "côte d'or",
             "pizza Hawaii",
-            "pizza barbecue"
+            "pizza barbecue",
         ],
     )
 
@@ -457,8 +478,6 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
         return {"lcs": str1[match.a : match.a + match.size]}
 
     def fuzzy_match(target: str, options: List[str]) -> str:
-        import numpy as np
-
         lcses = [longest_common_subsequence(target, option) for option in options]
         return options[np.argmax([len(lcs["lcs"]) for lcs in lcses])]
 
