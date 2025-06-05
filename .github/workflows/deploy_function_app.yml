@@ -44,7 +44,9 @@ jobs:
               --parameters infra/colliparser_params.bicep.bicepparam
 
       - name: Archive Function App
-        run: zip -r webhook.zip webhook
+        run: |
+          cd webhook
+          zip -r ../webhook.zip .
 
       - name: Deploy to Azure
         uses: azure/functions-action@v1
