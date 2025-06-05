@@ -5,7 +5,6 @@ import azure.functions as func
 from app import handle_telegram_update
 import logging
 
-# Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
 async def main(webhook: func.HttpRequest) -> func.HttpResponse:
