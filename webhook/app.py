@@ -359,6 +359,10 @@ async def process_invoice(
             "actimel",
             "san pellegrino clementina",
             "san pellegrino aranciata",
+            "roomijs vanille",
+            "côte d'or",
+            "pizza Hawaii",
+            ""
         ],
     )
 
