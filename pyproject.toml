@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Parses invoices to JSON using ChatGPT."
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
+packages = [
+    {include = "webhook"}
+]
+
 
 [tool.poetry.dependencies]
 python = "^3.9"
@@ -28,5 +32,3 @@ regex = "^2024.11.6"
 python-intervals = "^1.10.0.post1"
 azure-functions = "^1.21.3"
 mistralai = "^1.5.1"
-
-[tool.poetry.dev-dependencies]
