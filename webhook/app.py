@@ -362,7 +362,7 @@ async def process_invoice(
             "roomijs vanille",
             "côte d'or",
             "pizza Hawaii",
-            ""
+            "pizza barbecue"
         ],
     )
 
