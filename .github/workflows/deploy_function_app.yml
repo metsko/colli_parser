@@ -2,6 +2,10 @@ name: Deploy Azure Function
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'webhook/**'
+      - 'infra/**'
+      - '.github/workflows/deploy_function_app.yml'
 
 jobs:
   build-and-deploy:
@@ -34,7 +38,16 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Check for infra changes
+        id: check_infra_changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            infra:
+              - 'infra/**'
+
       - name: Deploy Bicep
+        if: steps.check_infra_changes.outputs.infra == 'true'
         uses: azure/cli@v1
         with:
           inlineScript: |
