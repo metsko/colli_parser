@@ -8,7 +8,6 @@ from typing import Dict, List
 
 import numpy as np
 import polars as pl
-from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
 from loguru import logger
 from splitwise import Splitwise
@@ -19,7 +18,10 @@ from tabulate import tabulate
 from telegram import Bot, Update
 
 from api_client import MistralAIClient
-from invoice_parser import InvoiceParser, azure_upload_ndjson
+# from blob_utils import async_azure_upload_ndjson, get_async_container_client
+
+from azure.storage.blob import BlobServiceClient, ContainerClient
+from invoice_parser import InvoiceParser
 from utils import get_hash_map
 
 env_path = ".env"
@@ -181,60 +183,128 @@ def register_splitwise_expenses(
 
 
 def calculate_file_hash(file_path: str) -> str:
+    """Calculate SHA-256 hash of a file"""
     hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
         buf = f.read()
         hasher.update(buf)
     return hasher.hexdigest()
 
+def get_container_client(container_name: str) -> ContainerClient:
+    """Get a synchronous container client"""
+    connection_string = os.getenv("AzureWebJobsStorage")
+    if not connection_string:
+        raise ValueError("No Azure Storage connection string found in environment variables")
+    
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+    return blob_service_client.get_container_client(container_name)
+
+def azure_upload_ndjson(df: pl.DataFrame, blob_name: str):
+    """Synchronous upload of DataFrame as NDJSON to blob storage"""
+    container_name = "function"
+    container_client = get_container_client(container_name)
+    
+    # Convert DataFrame to NDJSON
+    ndjson_data = io.BytesIO()
+    df.write_ndjson(ndjson_data)
+    ndjson_data.seek(0)
+    
+    # Upload to blob storage
+    blob_client = container_client.get_blob_client(blob_name)
+    blob_client.upload_blob(ndjson_data, overwrite=True)
+
+def local_save_ndjson(df: pl.DataFrame, file_name: str, data_path: str = data_path) -> None:
+    """Save DataFrame as NDJSON to local file system"""
+    # Ensure the output directory exists
+    output_dir = Path(data_path) / "output"
+    output_dir.mkdir(exist_ok=True)
+    
+    # Save the DataFrame to NDJSON file
+    output_path = output_dir / file_name
+    df.write_ndjson(output_path)
+    logger.info(f"Saved DataFrame to {output_path}")
 
 def parse_invoice(local_file_path: str, data_path=data_path) -> pl.DataFrame:
+    """Parse an invoice using local file operations"""
     parser = InvoiceParser(api_client, output_path=data_path)
     file_hash = calculate_file_hash(local_file_path)
-    container_name = "function"
-    df_output_blob_name = "output.ndjson"
-    blob_name = f"invoices/{file_hash}.pdf"
-    blob_service_client = BlobServiceClient.from_connection_string(
-        os.getenv("AzureWebJobsStorage")
-    )
-    blob_client = blob_service_client.get_blob_client(
-        container=container_name, blob=blob_name
-    )
-    if blob_client.exists():
-        logger.info(f"Blob {blob_name} already exists in container {container_name}.")
-        blob_client = blob_service_client.get_blob_client(
-            container=container_name, blob=df_output_blob_name
-        )
-        output_stream = blob_client.download_blob().readall()
-        df_existing = pl.read_ndjson(io.BytesIO(output_stream))
-        if file_hash in df_existing["file_hash"].to_list():
-            logger.info(
-                f"File hash {file_hash} already exists. Reading from blob storage."
-            )
-            return df_existing.filter(pl.col("file_hash") == file_hash)
-        else:
-            logger.info(
-                f"File hash {file_hash} not found in existing output. Continuing with parse and upload to df."
-            )
+    
+    # Ensure local storage directories exist
+    output_dir = Path(data_path) / "output"
+    invoices_dir = Path(data_path) / "invoices"
+    output_dir.mkdir(exist_ok=True)
+    invoices_dir.mkdir(exist_ok=True)
+    
+    # Output file paths
+    df_output_file = output_dir / "output.ndjson"
+    invoice_file = invoices_dir / f"{file_hash}.pdf"
+
+    # Convert Path to string if needed
+    if isinstance(local_file_path, Path):
+        local_file_path_str = str(local_file_path)
     else:
-        logger.info(f"Blob {blob_name} not found, continuing with parse and upload.")
-        blob_client.upload_blob(blob_name)
+        local_file_path_str = local_file_path
 
     try:
-        local_file_path_str = local_file_path.as_posix()
-        invoice_json = parser.parse_invoice(local_file_path_str).model_dump_json()
-        df = pl.DataFrame([invoice_json])
+        # Check if invoice file already exists
+        if invoice_file.exists():
+            logger.info(f"Invoice file {invoice_file} already exists.")
+            
+            # Check if output file exists and contains this invoice data
+            if df_output_file.exists():
+                try:
+                    # Read existing data
+                    df_existing = pl.read_ndjson(df_output_file)
+                    
+                    if file_hash in df_existing["file_hash"].to_list():
+                        logger.info(f"File hash {file_hash} already exists. Reading from local storage.")
+                        return df_existing.filter(pl.col("file_hash") == file_hash)
+                    else:
+                        logger.info(f"File hash {file_hash} not found in existing output. Continuing with parse.")
+                except Exception as e:
+                    logger.warning(f"Failed to read output data: {str(e)}")
+        else:
+            logger.info(f"Invoice file {invoice_file} not found, copying file.")
+            
+            # Copy the invoice file to the invoices directory
+            try:
+                import shutil
+                shutil.copy2(local_file_path_str, invoice_file)
+            except Exception as e:
+                logger.warning(f"Error copying invoice file: {str(e)}")
+    
+    except Exception as e:
+        logger.warning(f"Error with file operations: {str(e)}")
+
+    # Process the invoice
+    try:
+        invoice_result = parser.parse_invoice(local_file_path_str)
+
+        # Handle both single invoice and list of invoices
+        if hasattr(invoice_result, "model_dump_json"):
+            invoice_json = invoice_result.model_dump_json()
+            df = pl.DataFrame([invoice_json])
+        else:
+            # Assuming list of Invoice objects
+            invoice_jsons = [inv.model_dump_json() for inv in invoice_result]
+            df = pl.DataFrame(invoice_jsons)
+
         df = df.select(
             pl.col("column_0").str.json_decode().alias("page_struct")
         ).unnest("page_struct")
+
         df = df.with_columns(
             pl.lit(local_file_path_str).alias("path"),
             pl.lit(file_hash).alias("file_hash"),
         )
-        azure_upload_ndjson(df, df_output_blob_name)
+
+        # Save result to local file system
+        local_save_ndjson(df, "output.ndjson", data_path)
+        
         return df
     except ValueError as e:
         logger.error(f"Error: {e}")
+        raise
 
 
 def filter_items(invoice_items_df: pl.DataFrame, items: List[str]) -> pl.DataFrame:
@@ -347,7 +417,9 @@ def clean_invoice_df(invoice_items_df: pl.DataFrame) -> pl.DataFrame:
     cleaned_df_with_total = cleaned_df.with_columns(
         pl.lit(total_amount).alias("total_amount")
     )
-    if invoice_date:
+    # Add date column if it exists in the original data
+    if "invoice_date" in invoice_items_df.columns:
+        invoice_date = invoice_items_df["invoice_date"].first()
         cleaned_df_with_total = cleaned_df_with_total.with_columns(
             pl.lit(invoice_date).alias("date")
         )
@@ -362,9 +434,9 @@ def items_dicts_to_items(items_dicts: List[Dict]) -> List[str]:
 async def process_invoice(
     local_file_path: str, payer_name: str, sofies_amount: float, data_path: str
 ) -> str:
-    invoice_items_df = clean_invoice_df(
-        parse_invoice(local_file_path, data_path=data_path)
-    )
+    # Get the invoice data without await
+    invoice_df = parse_invoice(local_file_path, data_path=data_path)
+    invoice_items_df = clean_invoice_df(invoice_df)
     total_price = invoice_items_df["adjusted_amount"].sum()
     sofies_pct = (
         sofies_amount / total_price * 100 if payer_name.lower() != "sofie" else 100
@@ -581,8 +653,10 @@ async def handle_telegram_update(update_data: dict, data_path=data_path) -> None
         group_name = conversation_state[chat_id]["group_name"]
         sofies_amount = conversation_state[chat_id].get("sofie_amount", 0)
 
+        # Convert Path to string for process_invoice
+        local_file_path_str = str(local_file_path)
         answer = await process_invoice(
-            local_file_path,
+            local_file_path_str,
             payer_name=payer_name,
             sofies_amount=sofies_amount,
             data_path=data_path,
