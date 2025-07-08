@@ -461,7 +461,7 @@ async def process_invoice(
 
     maartens_items_descriptions = maartens_items_df["description"].to_list()
     register_splitwise_expenses(
-        maartens_items_df.to_dicts(),
+        maartens_items_df.sort("description").to_dicts(),
         payer_name=payer_name,
         friend_names=["Sofie"],
         maartens_owe_percentage=1,
@@ -474,7 +474,7 @@ async def process_invoice(
     )
     sofies_items_descriptions = sofies_items_df["description"].to_list()
     register_splitwise_expenses(
-        sofies_items_df.to_dicts(),
+        sofies_items_df.sort("description").to_dicts(),
         payer_name=payer_name,
         friend_names=["Sofie"],
         maartens_owe_percentage=0,
@@ -498,7 +498,7 @@ async def process_invoice(
         ~pl.col("description").is_in(not_rest_items)
     )
     register_splitwise_expenses(
-        rest_items_df.to_dicts(), payer_name=payer_name, sofies_pct=sofies_pct
+        rest_items_df.sort("description").to_dicts(), payer_name=payer_name, sofies_pct=sofies_pct
     )
 
     answer = f"Registered the Maartens items: \n{tabulate(maartens_items_df.to_pandas())}\n\n"
