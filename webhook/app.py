@@ -455,7 +455,7 @@ async def process_invoice(
             "roomijs vanille",
             "côte d'or",
             "pizza Hawaii",
-            "pizza barbecue",
+            "pizza barbecue"
         ],
     )
 
@@ -483,7 +483,8 @@ async def process_invoice(
 
     common_items_df = filter_items(
         invoice_items_df,
-        ["toiletpapier", "handzeep", "ontstopper", "allesreiniger", "afwasmiddel"],
+        ["handzeep", "ontstopper", "allesreiniger", "afwasmiddel",
+         "toilet"],
     )
     common_items_descriptions = common_items_df["description"].to_list()
     # register_splitwise_expenses(common_items_df.to_dicts(), group_name=BLIJDEBERG_SW_GROUP_NAME, sofies_pct=sofies_pct)
