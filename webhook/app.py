@@ -455,7 +455,11 @@ async def process_invoice(
             "roomijs vanille",
             "côte d'or",
             "pizza Hawaii",
-            "pizza barbecue"
+            "pizza barbecue",
+            "magic star", # appel
+            "coryphee", # appel
+            "bounty", # koek
+
         ],
     )
 
@@ -470,7 +474,9 @@ async def process_invoice(
 
     sofies_items_df = filter_items(
         invoice_items_df,
-        ["raclette", "maandverband"],
+        [
+            "raclette", "maandverband", "skyr", "sungold", "yoghurt", "frangipane", 
+            "amandelen", "sinaasappel", "agave", "havermout", "havervlokken"],
     )
     sofies_items_descriptions = sofies_items_df["description"].to_list()
     register_splitwise_expenses(
